@@ -206,6 +206,8 @@ func getMongoUri(ctx context.Context, k8sclient client.Client, cr *psmdbv1.Perco
 
 type NewPBMFunc func(ctx context.Context, c client.Client, cluster *psmdbv1.PerconaServerMongoDB) (PBM, error)
 
+var ErrNoReplsetAddrs = errors.New("no replset addresses")
+
 // NewPBM creates a new connection to PBM.
 // It should be closed after the last use with.
 func NewPBM(ctx context.Context, c client.Client, cluster *psmdbv1.PerconaServerMongoDB) (PBM, error) {
@@ -223,6 +225,10 @@ func NewPBM(ctx context.Context, c client.Client, cluster *psmdbv1.PerconaServer
 	addrs, err := psmdb.GetReplsetAddrs(ctx, c, cluster, cluster.Spec.ClusterServiceDNSMode, rs, false, pods.Items)
 	if err != nil {
 		return nil, errors.Wrap(err, "get replset addrs")
+	}
+
+	if len(addrs) == 0 {
+		return nil, ErrNoReplsetAddrs
 	}
 
 	murl, err := getMongoUri(ctx, c, cluster, addrs, cluster.TLSEnabled())
@@ -245,7 +251,13 @@ func NewPBM(ctx context.Context, c client.Client, cluster *psmdbv1.PerconaServer
 }
 
 // GetPriorities returns priorities to be used in PBM config.
+//
+// Deprecated: For >=1.24.0 this is no-op, operator doesn't configure any priorities any more.
 func GetPriorities(ctx context.Context, k8sclient client.Client, cluster *psmdbv1.PerconaServerMongoDB) (map[string]float64, error) {
+	if cluster.CompareVersion("1.24.0") >= 0 {
+		return nil, nil
+	}
+
 	log := logf.FromContext(ctx)
 	priorities := make(map[string]float64)
 
@@ -1530,7 +1542,7 @@ func (b *pbmC) DeletePITRChunks(ctx context.Context, until bson.Timestamp) error
 
 	for _, chnk := range chunks {
 		err = stg.Delete(chnk.FName)
-		if err != nil && err != storage.ErrNotExist {
+		if err != nil && !errors.Is(err, storage.ErrNotExist) {
 			return errors.Wrapf(err, "delete pitr chunk '%s' (%v) from storage", chnk.FName, chnk)
 		}
 
