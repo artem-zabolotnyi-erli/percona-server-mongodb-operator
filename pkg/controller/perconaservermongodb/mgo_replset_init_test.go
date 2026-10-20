@@ -376,3 +376,51 @@ func TestHandleReplsetInitIdempotentAdminUser(t *testing.T) {
 		assert.Equal(t, int32(1), exec.authCheckCalls.Load())
 	})
 }
+
+// A logical restore swaps users and roles in admin, so recreating system roles
+// at the same time makes the restore fail with a duplicate key error.
+func TestReconcileClusterSkipsSystemUsersDuringRestore(t *testing.T) {
+	logf.SetLogger(zap.New(zap.WriteTo(io.Discard)))
+	ctx := context.Background()
+
+	tests := map[string]struct {
+		restoreState    api.RestoreState
+		wantSystemUsers bool
+	}{
+		"restore running": {
+			restoreState:    api.RestoreStateRunning,
+			wantSystemUsers: false,
+		},
+		"restore finished": {
+			restoreState:    api.RestoreStateReady,
+			wantSystemUsers: true,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			provider := &initMongoClientProvider{
+				userAdminErr: errors.New("userAdmin client requested"),
+			}
+			r, cr, rs := setupReplsetInitTest(t, provider, &replsetInitExecRecorder{})
+			cr.Status.Replsets[rs.Name] = api.ReplsetStatus{Initialized: true}
+
+			require.NoError(t, r.client.Create(ctx, &api.PerconaServerMongoDBRestore{
+				Name:      "restore",
+				Namespace: cr.Namespace,
+				Spec:      api.PerconaServerMongoDBRestoreSpec{ClusterName: cr.Name},
+				Status:    api.PerconaServerMongoDBRestoreStatus{State: tt.restoreState},
+			}))
+
+			_, _, err := r.reconcileCluster(ctx, cr, rs, nil)
+			if tt.wantSystemUsers {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "create system users")
+				return
+			}
+			if err != nil {
+				assert.NotContains(t, err.Error(), "create system users")
+			}
+		})
+	}
+}

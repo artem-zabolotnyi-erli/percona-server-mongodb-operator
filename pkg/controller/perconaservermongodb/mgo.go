@@ -189,9 +189,19 @@ func (r *ReconcilePerconaServerMongoDB) reconcileCluster(ctx context.Context, cr
 		}
 		return api.AppStateReady, nil, nil
 	}
-	err = r.createOrUpdateSystemUsers(ctx, cr, replset)
+
+	rstRunning, err := r.isRestoreRunning(ctx, cr)
 	if err != nil {
-		return api.AppStateInit, nil, errors.Wrap(err, "create system users")
+		return api.AppStateInit, nil, errors.Wrap(err, "failed to check running restore")
+	}
+
+	// Logical restores swap users and roles in admin. Recreating system roles
+	// in the meantime makes PBM fail with a duplicate key error.
+	if !rstRunning {
+		err = r.createOrUpdateSystemUsers(ctx, cr, replset)
+		if err != nil {
+			return api.AppStateInit, nil, errors.Wrap(err, "create system users")
+		}
 	}
 
 	// this can happen if cluster is initialized but status update failed
@@ -208,11 +218,6 @@ func (r *ReconcilePerconaServerMongoDB) reconcileCluster(ctx context.Context, cr
 		})
 
 		return api.AppStateInit, nil, nil
-	}
-
-	rstRunning, err := r.isRestoreRunning(ctx, cr)
-	if err != nil {
-		return api.AppStateInit, nil, errors.Wrap(err, "failed to check running restore")
 	}
 
 	if cr.Spec.Sharding.Enabled &&
